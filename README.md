@@ -39,7 +39,8 @@ Triggers   Analysis       Rewards/      Updates
 
 ### Core Automation Pipeline
 
-- `POST /api/logs` - Ingest EMS logs
+- `POST /api/logs` - Ingest single EMS log
+- `POST /api/logs/bulk` - Ingest multiple EMS logs
 - `POST /api/tasks/complete` - Trigger task completion pipeline
 - `GET /health` - System health check
 
@@ -50,6 +51,7 @@ Triggers   Analysis       Rewards/      Updates
 - `POST /api/consent` - Handle consent events
 - `GET /api/status` - Get orchestration status
 - `GET /api/logs` - Get recent logs
+- `GET /api/dashboard/stream` - Real-time dashboard event streaming
 
 ## Integration Points for Team Members
 
@@ -121,14 +123,15 @@ Triggers   Analysis       Rewards/      Updates
   ```
 
 #### Real-time Event Streaming
-The system emits events that can be consumed by the dashboard:
-- `pipelineComplete` - Full pipeline completion
-- `taskPipelineComplete` - Task-specific completion
-- `error` - System errors
+- **Endpoint**: `GET /api/dashboard/stream` (Server-Sent Events)
+- **Events**:
+  - `pipelineComplete` - Full pipeline completion with evaluation data
+  - `taskPipelineComplete` - Task-specific completion with task and evaluation data
+  - `connected` - Initial connection confirmation
 
 #### Integration Example
 ```javascript
-// Connect to orchestration events
+// HTTP POST integration
 const orchestrator = require('./src/modules/orchestrator');
 
 orchestrator.on('pipelineComplete', (data) => {
@@ -136,10 +139,20 @@ orchestrator.on('pipelineComplete', (data) => {
   updateDashboard(data.evaluation);
 });
 
-orchestrator.on('taskPipelineComplete', (data) => {
-  // Update task-specific metrics
-  updateTaskMetrics(data.taskData, data.evaluation);
-});
+// Real-time streaming integration
+const eventSource = new EventSource('/api/dashboard/stream');
+
+eventSource.onmessage = (event) => {
+  const data = JSON.parse(event.data);
+  switch (data.type) {
+    case 'pipelineComplete':
+      updateDashboardRealtime(data.data.evaluation);
+      break;
+    case 'taskPipelineComplete':
+      updateTaskMetrics(data.data.taskData, data.data.evaluation);
+      break;
+  }
+};
 ```
 
 ## Event Flow Monitoring

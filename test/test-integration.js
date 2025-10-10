@@ -114,6 +114,54 @@ async function testConsentTrigger() {
   }
 }
 
+async function testConsentChecking() {
+  console.log('\n=== Testing Consent Checking ===');
+
+  try {
+    // First, set consent to false for a user
+    await axios.post(`${BASE_URL}/api/consent`, {
+      userId: 'test-user-no-consent',
+      action: 'data_processing',
+      consentGiven: false,
+      metadata: { test: true }
+    });
+
+    // Try to send a log for that user - should be skipped
+    const logResponse = await axios.post(`${BASE_URL}/api/logs`, {
+      id: 'test-log-no-consent',
+      type: 'user_activity',
+      message: 'Test log without consent',
+      userId: 'test-user-no-consent',
+      metadata: { test: true }
+    });
+
+    console.log('✓ Log sent (should be processed only if consent given):', logResponse.data);
+
+    // Now set consent to true
+    await axios.post(`${BASE_URL}/api/consent`, {
+      userId: 'test-user-with-consent',
+      action: 'data_processing',
+      consentGiven: true,
+      metadata: { test: true }
+    });
+
+    // Send log for user with consent - should be processed
+    const logResponse2 = await axios.post(`${BASE_URL}/api/logs`, {
+      id: 'test-log-with-consent',
+      type: 'user_activity',
+      message: 'Test log with consent',
+      userId: 'test-user-with-consent',
+      metadata: { test: true }
+    });
+
+    console.log('✓ Log sent (should be processed):', logResponse2.data);
+    return true;
+  } catch (error) {
+    console.log('✗ Consent checking test failed:', error.message);
+    return false;
+  }
+}
+
 async function testTaskCompletion() {
   console.log('\n=== Testing Task Completion Pipeline ===');
 
@@ -216,6 +264,7 @@ async function runTests() {
     results.push(await testEMSLogIngestion());
     results.push(await testAlertTrigger());
     results.push(await testConsentTrigger());
+    results.push(await testConsentChecking());
     results.push(await testTaskCompletion());
     results.push(await testPauseResume());
     results.push(await testStatusEndpoint());

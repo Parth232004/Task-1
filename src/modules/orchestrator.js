@@ -2,7 +2,11 @@ const EventEmitter = require('eventemitter3');
 const emsHandler = require('./emsHandler');
 const aiOrchestrator = require('./aiOrchestrator');
 const rlEvaluator = require('./rlEvaluator');
+const consentManager = require('./consentManager');
 const logger = require('../utils/logger');
+
+// Import dashboard connections from main app (will be set later)
+let dashboardConnections = new Set();
 
 class WorkflowOrchestrator extends EventEmitter {
   constructor() {
@@ -15,6 +19,34 @@ class WorkflowOrchestrator extends EventEmitter {
       errors: 0
     };
     this.setupEventListeners();
+  }
+
+  // Set dashboard connections for real-time streaming
+  setDashboardConnections(connections) {
+    dashboardConnections = connections;
+  }
+
+  // Broadcast event to dashboard connections
+  broadcastToDashboard(eventType, data) {
+    const eventData = {
+      type: eventType,
+      timestamp: new Date().toISOString(),
+      data
+    };
+
+    dashboardConnections.forEach(res => {
+      try {
+        res.write(`data: ${JSON.stringify(eventData)}\n\n`);
+      } catch (error) {
+        // Remove broken connections
+        dashboardConnections.delete(res);
+        logger.warn('Removed broken dashboard connection', { error: error.message });
+      }
+    });
+
+    if (dashboardConnections.size > 0) {
+      logger.info('Broadcasted event to dashboard', { eventType, connections: dashboardConnections.size });
+    }
   }
 
   // Start the orchestration
@@ -40,6 +72,17 @@ class WorkflowOrchestrator extends EventEmitter {
       if (!this.isRunning) return;
       this.eventCounts.logsReceived++;
       logger.info('Processing EMS log in orchestrator', { logId: logData.id });
+
+      // Check user consent before processing
+      const userId = logData.userId || logData.metadata?.userId;
+      if (userId && !consentManager.hasMonitoringConsent(userId)) {
+        logger.info('Skipping log processing due to lack of consent', {
+          logId: logData.id,
+          userId,
+          type: logData.type
+        });
+        return;
+      }
 
       try {
         await aiOrchestrator.analyzeLog(logData);
@@ -69,6 +112,9 @@ class WorkflowOrchestrator extends EventEmitter {
       this.eventCounts.evaluationsCompleted++;
       logger.info('Evaluation pipeline completed', { logId: evaluationData.logData.id });
       this.emit('pipelineComplete', evaluationData);
+
+      // Broadcast to dashboard
+      this.broadcastToDashboard('pipelineComplete', evaluationData);
     });
 
     // Handle errors
@@ -104,6 +150,10 @@ class WorkflowOrchestrator extends EventEmitter {
       const evaluation = await rlEvaluator.evaluateTaskCompletion(taskData, analysis);
 
       this.emit('taskPipelineComplete', { taskData, analysis, evaluation });
+
+      // Broadcast to dashboard
+      this.broadcastToDashboard('taskPipelineComplete', { taskData, analysis, evaluation });
+
       return { analysis, evaluation };
     } catch (error) {
       this.eventCounts.errors++;

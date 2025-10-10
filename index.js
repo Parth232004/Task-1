@@ -11,8 +11,37 @@ const PORT = process.env.PORT || 3000;
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+// Store active dashboard connections for real-time updates
+const dashboardConnections = new Set();
+
 // Routes
 app.use('/api', triggerRoutes);
+
+// Real-time dashboard streaming endpoint (Server-Sent Events)
+app.get('/api/dashboard/stream', (req, res) => {
+  // Set headers for SSE
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    'Connection': 'keep-alive',
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Headers': 'Cache-Control',
+  });
+
+  // Send initial connection message
+  res.write(`data: ${JSON.stringify({ type: 'connected', message: 'Dashboard stream connected' })}\n\n`);
+
+  // Add to active connections
+  dashboardConnections.add(res);
+
+  // Remove connection when client disconnects
+  req.on('close', () => {
+    dashboardConnections.delete(res);
+    logger.info('Dashboard client disconnected');
+  });
+
+  logger.info('Dashboard client connected for real-time streaming');
+});
 
 // Health check endpoint
 app.get('/health', (req, res) => {
@@ -63,7 +92,7 @@ app.post('/api/tasks/complete', async (req, res) => {
   }
 });
 
-// EMS log ingestion endpoint
+// EMS log ingestion endpoint (single log)
 app.post('/api/logs', (req, res) => {
   try {
     const logData = req.body;
@@ -91,6 +120,43 @@ app.post('/api/logs', (req, res) => {
   }
 });
 
+// EMS bulk log ingestion endpoint
+app.post('/api/logs/bulk', (req, res) => {
+  try {
+    const { logs } = req.body;
+
+    if (!logs || !Array.isArray(logs) || logs.length === 0) {
+      return res.status(400).json({
+        error: 'Logs array is required and must not be empty'
+      });
+    }
+
+    // Import here to avoid circular dependency
+    const emsHandler = require('./src/modules/emsHandler');
+    let processed = 0;
+
+    logs.forEach(logData => {
+      try {
+        emsHandler.receiveLog(logData);
+        processed++;
+      } catch (error) {
+        logger.error('Failed to process log in bulk', { logId: logData?.id, error: error.message });
+      }
+    });
+
+    res.json({
+      success: true,
+      message: `${processed}/${logs.length} logs received and queued for processing`
+    });
+  } catch (error) {
+    logger.error('Bulk log ingestion failed', { error: error.message });
+    res.status(500).json({
+      error: 'Failed to ingest logs',
+      details: error.message
+    });
+  }
+});
+
 // Error handling middleware
 app.use((error, req, res, next) => {
   logger.error('Unhandled error', { error: error.message, stack: error.stack });
@@ -113,6 +179,9 @@ app.use((req, res) => {
 if (require.main === module) {
   app.listen(PORT, () => {
     logger.info(`AI-Driven RL Workflow Automation server running on port ${PORT}`);
+
+    // Set dashboard connections for real-time streaming
+    orchestrator.setDashboardConnections(dashboardConnections);
 
     // Start orchestrator
     orchestrator.start();

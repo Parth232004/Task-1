@@ -29,6 +29,15 @@ class EMSHandler extends EventEmitter {
       } else {
         // Emit separate consent event
         this.emit('consentReceived', parsedLog);
+    
+        // Notify dashboard of consent update
+        const dashboardIntegration = require('./dashboardIntegration');
+        dashboardIntegration.sendConsentUpdate({
+          userId: parsedLog.userId,
+          action: parsedLog.action,
+          consentGiven: parsedLog.consentGiven,
+          timestamp: parsedLog.timestamp
+        });
       }
     } catch (error) {
       logger.error('Error processing EMS log', { error: error.message, logData });

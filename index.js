@@ -44,19 +44,45 @@ app.get('/api/dashboard/stream', (req, res) => {
 });
 
 // Health check endpoint
-app.get('/health', (req, res) => {
-  const stats = orchestrator.getStats();
-  const consistency = orchestrator.checkEventConsistency();
+app.get('/health', async (req, res) => {
+  try {
+    const stats = orchestrator.getStats();
+    const consistency = orchestrator.checkEventConsistency();
 
-  res.json({
-    status: 'healthy',
-    timestamp: new Date().toISOString(),
-    orchestrator: {
-      running: stats.isRunning,
-      stats,
-      consistency
-    }
-  });
+    // Get health status from all integrated services
+    const aiOrchestrator = require('./src/modules/aiOrchestrator');
+    const rlEvaluator = require('./src/modules/rlEvaluator');
+    const consentManager = require('./src/modules/consentManager');
+    const emsIngestion = require('./src/modules/emsIngestion');
+    const dashboardIntegration = require('./src/modules/dashboardIntegration');
+
+    const [consentHealth, emsHealth, dashboardHealth] = await Promise.allSettled([
+      consentManager.getHealthStatus ? consentManager.getHealthStatus() : Promise.resolve({ status: 'unknown' }),
+      emsIngestion.getHealthStatus ? emsIngestion.getHealthStatus() : Promise.resolve({ status: 'unknown' }),
+      dashboardIntegration.getHealthStatus ? dashboardIntegration.getHealthStatus() : Promise.resolve({ status: 'unknown' })
+    ]);
+
+    res.json({
+      status: 'healthy',
+      timestamp: new Date().toISOString(),
+      orchestrator: {
+        running: stats.isRunning,
+        stats,
+        consistency
+      },
+      integrations: {
+        consent_api: consentHealth.status === 'fulfilled' ? consentHealth.value : { status: 'error' },
+        ems_ingestion: emsHealth.status === 'fulfilled' ? emsHealth.value : { status: 'error' },
+        dashboard: dashboardHealth.status === 'fulfilled' ? dashboardHealth.value : { status: 'error' }
+      }
+    });
+  } catch (error) {
+    res.status(500).json({
+      status: 'error',
+      timestamp: new Date().toISOString(),
+      error: error.message
+    });
+  }
 });
 
 // Task completion endpoint (for automation pipeline)

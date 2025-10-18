@@ -1,8 +1,10 @@
 const EventEmitter = require('eventemitter3');
 const emsHandler = require('./emsHandler');
+const emsIngestion = require('./emsIngestion');
 const aiOrchestrator = require('./aiOrchestrator');
 const rlEvaluator = require('./rlEvaluator');
 const consentManager = require('./consentManager');
+const dashboardIntegration = require('./dashboardIntegration');
 const logger = require('../utils/logger');
 
 // Import dashboard connections from main app (will be set later)
@@ -53,6 +55,13 @@ class WorkflowOrchestrator extends EventEmitter {
   start() {
     if (this.isRunning) return;
     this.isRunning = true;
+
+    // Start EMS ingestion service
+    emsIngestion.start();
+
+    // Initialize dashboard integration
+    dashboardIntegration.initialize();
+
     logger.info('Workflow Orchestrator started');
     this.emit('started');
   }
@@ -61,12 +70,23 @@ class WorkflowOrchestrator extends EventEmitter {
   stop() {
     if (!this.isRunning) return;
     this.isRunning = false;
+
+    // Stop EMS ingestion service
+    emsIngestion.stop();
+
     logger.info('Workflow Orchestrator stopped');
     this.emit('stopped');
   }
 
   // Setup event listeners for the pipeline
   setupEventListeners() {
+    // EMS ingestion service -> EMS handler
+    emsIngestion.on('logIngested', (logData) => {
+      if (!this.isRunning) return;
+      // Forward to EMS handler for processing
+      emsHandler.receiveLog(logData);
+    });
+
     // EMS log received -> AI analysis
     emsHandler.on('logReceived', async (logData) => {
       if (!this.isRunning) return;
@@ -75,13 +95,16 @@ class WorkflowOrchestrator extends EventEmitter {
 
       // Check user consent before processing
       const userId = logData.userId || logData.metadata?.userId;
-      if (userId && !consentManager.hasMonitoringConsent(userId)) {
-        logger.info('Skipping log processing due to lack of consent', {
-          logId: logData.id,
-          userId,
-          type: logData.type
-        });
-        return;
+      if (userId) {
+        const hasConsent = await consentManager.hasMonitoringConsent(userId);
+        if (!hasConsent) {
+          logger.info('Skipping log processing due to lack of consent', {
+            logId: logData.id,
+            userId,
+            type: logData.type
+          });
+          return;
+        }
       }
 
       try {
@@ -115,6 +138,9 @@ class WorkflowOrchestrator extends EventEmitter {
 
       // Broadcast to dashboard
       this.broadcastToDashboard('pipelineComplete', evaluationData);
+
+      // Send to Nisarg's dashboard
+      dashboardIntegration.sendPipelineComplete(evaluationData);
     });
 
     // Handle errors
@@ -122,18 +148,21 @@ class WorkflowOrchestrator extends EventEmitter {
       this.eventCounts.errors++;
       logger.error('EMS Handler error', { error: error.message });
       this.emit('error', { source: 'EMS', error });
+      dashboardIntegration.sendError({ source: 'EMS', error: error.message });
     });
 
     aiOrchestrator.on('analysisError', (errorData) => {
       this.eventCounts.errors++;
       logger.error('AI Orchestrator error', { logId: errorData.logData?.id, error: errorData.error });
       this.emit('error', { source: 'AI', ...errorData });
+      dashboardIntegration.sendError({ source: 'AI', error: errorData.error, logData: errorData.logData });
     });
 
     rlEvaluator.on('evaluationError', (errorData) => {
       this.eventCounts.errors++;
       logger.error('RL Evaluator error', { logId: errorData.analysisData?.logData?.id, error: errorData.error });
       this.emit('error', { source: 'RL', ...errorData });
+      dashboardIntegration.sendError({ source: 'RL', error: errorData.error, logData: errorData.analysisData?.logData });
     });
   }
 
